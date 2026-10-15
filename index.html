@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en" data-mode="contemporary">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>May's Studio</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="May's Studio">
+  <meta name="theme-color" content="#1b1420">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Inter:wght@400;500;600;700&family=Bebas+Neue&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ───────────── Library ───────────── -->
+  <section id="view-library" class="view active">
+    <header class="top lib-top">
+      <div class="top-row">
+        <p class="eyebrow">welcome back, May</p>
+        <div class="top-actions">
+          <button id="mode-toggle" class="pill" aria-label="Switch style">
+            <span class="mode-contemporary">Contemporary</span>
+            <span class="mode-hiphop">Hip Hop</span>
+          </button>
+          <button class="icon-btn help-btn" data-help aria-label="How to use">?</button>
+        </div>
+      </div>
+      <h1 class="brand">May's Studio</h1>
+    </header>
+
+    <div id="song-list" class="song-list"></div>
+
+    <div id="empty" class="empty hidden">
+      <p class="empty-title">Your choreo notebook</p>
+      <p class="muted">Add a song from your Files, tap along to find the beat, and every 8-count gets its own page for notes.</p>
+    </div>
+
+    <div class="add-row">
+      <label class="btn primary big">
+        <input id="file-input" type="file" accept="audio/*,.mp3,.m4a,.wav,.aac" hidden>
+        ＋ Add a song
+      </label>
+      <button id="demo-btn" class="btn ghost">Try a practice beat</button>
+    </div>
+
+    <footer class="foot">
+      <span class="muted">made with</span>
+      <button id="heart" class="heart" aria-label="heart">♥</button>
+      <span class="muted">for May</span>
+    </footer>
+  </section>
+
+  <!-- ───────────── Player / choreo ───────────── -->
+  <section id="view-player" class="view">
+    <header class="top compact">
+      <button id="back" class="icon-btn" aria-label="Back">‹</button>
+      <h2 id="song-title" class="song-title"></h2>
+      <button class="icon-btn help-btn" data-help aria-label="How to use">?</button>
+    </header>
+
+    <div class="counter">
+      <div id="eight-label" class="eight-label">find the beat ↓</div>
+      <div id="counts" class="counts"></div>
+    </div>
+
+    <div class="wave-wrap">
+      <canvas id="wave"></canvas>
+      <div id="wave-loading" class="wave-loading">reading the music…</div>
+    </div>
+
+    <div class="time-row">
+      <span id="t-now">0:00</span>
+      <span id="t-dur" class="muted">0:00</span>
+    </div>
+
+    <div class="transport">
+      <button id="back8" class="icon-btn" aria-label="Back one 8-count">⏮</button>
+      <button id="play" class="play" aria-label="Play">▶</button>
+      <button id="fwd8" class="icon-btn" aria-label="Forward one 8-count">⏭</button>
+    </div>
+
+    <div class="speed" role="group" aria-label="Speed">
+      <button data-rate="0.5">0.5×</button>
+      <button data-rate="0.75">0.75×</button>
+      <button data-rate="0.9">0.9×</button>
+      <button data-rate="1" class="on">1×</button>
+    </div>
+
+    <div class="card beat-card">
+      <div class="card-head">
+        <h3>The beat</h3>
+        <span class="muted small">tap along while it plays</span>
+      </div>
+      <div class="beat-row">
+        <button id="tap" class="btn primary tap">TAP</button>
+        <div class="bpm-box">
+          <input id="bpm" type="number" inputmode="decimal" step="0.1" min="40" max="220" placeholder="—">
+          <span class="muted small">BPM</span>
+        </div>
+      </div>
+      <div class="beat-row">
+        <button id="set-one" class="btn">Set “1” here</button>
+        <button id="nudge-l" class="btn small-btn" aria-label="Nudge earlier">◀</button>
+        <button id="nudge-r" class="btn small-btn" aria-label="Nudge later">▶</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3><span class="mode-contemporary">Phrases</span><span class="mode-hiphop">8-counts</span></h3>
+        <div class="loop-ctrls">
+          <button id="extend" class="btn small-btn" disabled>＋ next</button>
+          <button id="loop" class="btn small-btn" disabled>⟲ Loop</button>
+        </div>
+      </div>
+      <div id="eights" class="eights"></div>
+      <div id="note-box" class="note-box hidden">
+        <label id="note-label" class="small muted" for="note"></label>
+        <textarea id="note" rows="3" placeholder="e.g. hit on 5, melt down 6-7, roll out on 8"></textarea>
+      </div>
+    </div>
+
+    <button id="delete-song" class="btn danger-link">Remove this song</button>
+  </section>
+
+  <!-- ───────────── Our Soundtrack (secret) ───────────── -->
+  <section id="view-soundtrack" class="view soundtrack">
+    <header class="top compact">
+      <button id="st-back" class="icon-btn" aria-label="Back">‹</button>
+      <span class="spacer"></span>
+    </header>
+    <div id="st-content"></div>
+  </section>
+
+  <!-- ───────────── How-to tour ───────────── -->
+  <div id="intro" class="intro hidden" role="dialog" aria-modal="true" aria-labelledby="intro-title">
+    <div class="intro-card">
+      <button id="intro-skip" class="intro-skip">Skip</button>
+      <div id="intro-art" class="intro-art"></div>
+      <h2 id="intro-title" class="intro-title"></h2>
+      <p id="intro-text" class="intro-text"></p>
+      <div id="intro-dots" class="intro-dots"></div>
+      <div class="intro-nav">
+        <button id="intro-prev" class="btn ghost">Back</button>
+        <button id="intro-next" class="btn primary">Next</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="soundtrack.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

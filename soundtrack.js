@@ -1,7 +1,9 @@
 // ♥ Our Soundtrack — the secret page.
 // May finds it by tapping the little heart at the bottom of the home screen 3 times.
 //
-// Lucca: edit everything below. Add as many songs as you like (newest at the bottom).
+// Lucca: edit everything below. Add as many songs as you like (oldest first).
+//   date:  optional — e.g. "March 2024" or "our first road trip"
+//   note:  optional — a few words to her about why this song is yours
 //   photo: optional — put an image in the photos/ folder and write "photos/first-date.jpg"
 //   link:  optional — an Apple Music / Spotify / YouTube link to the song
 window.SOUNDTRACK = {
@@ -10,28 +12,36 @@ window.SOUNDTRACK = {
 
   songs: [
     {
-      date: "EDIT ME — e.g. March 2024",
-      song: "The song from our first date",
-      artist: "Artist name",
-      note: "Write what you remember about this moment. What she was wearing, what made you laugh, why this song stuck.",
-      photo: "",
-      link: ""
-    },
-    {
-      date: "EDIT ME",
-      song: "The one we sang in the car",
-      artist: "Artist name",
-      note: "A little story about it.",
-      photo: "",
-      link: ""
-    },
-    {
-      date: "EDIT ME",
-      song: "The first time I watched you dance to this",
-      artist: "Artist name",
+      date: "",
+      song: "City of Stars",
+      artist: "Ryan Gosling & Emma Stone",
       note: "",
       photo: "",
-      link: ""
+      link: "https://music.apple.com/search?term=City%20of%20Stars%20La%20La%20Land"
+    },
+    {
+      date: "",
+      song: "Say You Won't Let Go",
+      artist: "James Arthur",
+      note: "",
+      photo: "",
+      link: "https://music.apple.com/search?term=Say%20You%20Won%27t%20Let%20Go%20James%20Arthur"
+    },
+    {
+      date: "",
+      song: "All of Me",
+      artist: "John Legend",
+      note: "",
+      photo: "",
+      link: "https://music.apple.com/search?term=All%20of%20Me%20John%20Legend"
+    },
+    {
+      date: "",
+      song: "Wicked Game",
+      artist: "Chris Isaak",
+      note: "",
+      photo: "",
+      link: "https://music.apple.com/search?term=Wicked%20Game%20Chris%20Isaak"
     }
   ],
 

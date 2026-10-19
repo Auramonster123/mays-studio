@@ -12,11 +12,13 @@
     open() {
       if (this.db) return Promise.resolve(this.db);
       return new Promise((resolve, reject) => {
-        const req = indexedDB.open('mays-studio', 2);
+        const req = indexedDB.open('mays-studio', 3);
         req.onupgradeneeded = () => {
           const db = req.result;
           if (!db.objectStoreNames.contains('songs')) db.createObjectStore('songs', { keyPath: 'id' });
           if (!db.objectStoreNames.contains('takes')) db.createObjectStore('takes', { keyPath: 'id' }).createIndex('song', 'songId');
+          // One choreo (reference) video per song
+          if (!db.objectStoreNames.contains('refs')) db.createObjectStore('refs', { keyPath: 'songId' });
         };
         req.onsuccess = () => {
           this.db = req.result;
@@ -43,6 +45,9 @@
     takesFor(songId) { return this.tx('takes', 'readonly', (s) => s.index('song').getAll(songId)); },
     putTake(rec) { return this.tx('takes', 'readwrite', (s) => s.put(rec)); },
     delTake(id) { return this.tx('takes', 'readwrite', (s) => s.delete(id)); },
+    getRef(songId) { return this.tx('refs', 'readonly', (s) => s.get(songId)); },
+    putRef(rec) { return this.tx('refs', 'readwrite', (s) => s.put(rec)); },
+    delRef(songId) { return this.tx('refs', 'readwrite', (s) => s.delete(songId)); },
     async delTakesFor(songId) {
       for (const t of await this.takesFor(songId)) await this.delTake(t.id);
     },
@@ -212,12 +217,15 @@
     renderEights();
     renderSelection();
     refreshTakeCount();
+    loadRef();
     show('view-player');
   }
 
   function closeSong() {
     closeTakeView();
     closeMirror();
+    closeLearn();
+    ref = null;
     $('#takes').classList.add('hidden');
     audio.pause();
     if (song) DB.put(song);
@@ -232,6 +240,7 @@
     audio.pause();
     await DB.del(song.id);
     await DB.delTakesFor(song.id);
+    await DB.delRef(song.id);
     song = null;
     renderLibrary();
     show('view-library');
@@ -569,7 +578,7 @@
   if (!READY_SECS.includes(readySecs)) readySecs = 5;
 
   $('#m-counts').innerHTML = Array.from({ length: 8 }, (_, i) => `<div class="mcount">${i + 1}</div>`).join('');
-  const mCountEls = [...document.querySelectorAll('.mcount')];
+  const mCountEls = [...document.querySelectorAll('#m-counts .mcount')];
   let mLastBeat;
 
   function mirrorMsg(html) {
@@ -926,6 +935,7 @@
     $('#tv-title').textContent = `Take ${t.n}`;
     $('#tv-count').textContent = '';
     $('#take-view').classList.remove('hidden');
+    compareStart(t);
     // Start both inside the tap so iOS allows the sound
     takeAudio.currentTime = t.songAt0;
     takeVideo.play().catch(() => {});
@@ -940,6 +950,7 @@
     takeVideo.removeAttribute('src');
     takeVideo.load();
     URL.revokeObjectURL(viewURL);
+    compareStop();
     $('#take-view').classList.add('hidden');
   }
 
@@ -958,6 +969,7 @@
     } else if (Math.abs(takeAudio.currentTime - target) > 0.25) {
       takeAudio.currentTime = target;
     }
+    tickCompare(target, !v.paused && !v.ended);
     if (beatLen()) {
       const beat = beatAt(target);
       $('#tv-count').textContent = beat >= 0 ? `${eightWord()} ${Math.floor(beat / 8) + 1} · ${(beat % 8) + 1}` : 'intro';
@@ -966,7 +978,7 @@
 
   // Keep the music locked to the video even if the frame loop is paused
   const takeTarget = () => viewing.songAt0 + takeVideo.currentTime * viewing.rate;
-  ['pause', 'ended', 'waiting'].forEach((ev) => takeVideo.addEventListener(ev, () => takeAudio.pause()));
+  ['pause', 'ended', 'waiting'].forEach((ev) => takeVideo.addEventListener(ev, () => { takeAudio.pause(); tvRef.pause(); }));
   ['playing', 'seeked'].forEach((ev) => takeVideo.addEventListener(ev, () => {
     if (!viewing) return;
     takeAudio.currentTime = takeTarget();
@@ -990,6 +1002,322 @@
   });
   $('#tv-seek').addEventListener('change', () => (seekingTake = false));
 
+  // ── Learn mode: go through a choreo video count by count ────────────────
+  // The video keeps its own sound. Its counts use the song's BPM, starting from
+  // the "1" she marks in the video (song.refOffset, in video seconds).
+  const refVideo = $('#ref-video');
+  const lCam = $('#l-cam');
+  const L_RATES = [0.25, 0.5, 0.75, 1];
+  let ref = null;             // { songId, blob, name } for the open song
+  let refURL = null;
+  let learnOpen = false, lCamStream = null, lWake = null;
+  let stepUntil = null;       // video time to freeze at after "count ▶"
+  let lLoop = null;           // [start, end] of the 8-count being looped
+  let lSeeking = false, lLastBeat;
+  $('#l-counts').innerHTML = Array.from({ length: 8 }, (_, i) => `<div class="mcount">${i + 1}</div>`).join('');
+  const lCountEls = [...document.querySelectorAll('#l-counts .mcount')];
+
+  const hasOne = () => !!song && song.refOffset !== null && song.refOffset !== undefined;
+  const vBeatAt = (vt) => Math.floor((vt - song.refOffset) / beatLen() + 1e-4);
+  // Start of count k in the video; without a beat grid, steps are half a second
+  const vCountStart = (k) => (beatLen() && hasOne() ? song.refOffset + k * beatLen() : k * 0.5);
+  const vCountAt = (vt) => (beatLen() && hasOne() ? vBeatAt(vt) : Math.floor(vt / 0.5 + 1e-4));
+
+  async function loadRef() {
+    const id = song && song.id;
+    const r = id ? await DB.getRef(id) : null;
+    if (!song || song.id !== id) return;   // she switched songs meanwhile
+    ref = r || null;
+    $('#learn-empty').classList.toggle('hidden', !!ref);
+    $('#learn-has').classList.toggle('hidden', !ref);
+    $('#ref-name').textContent = ref ? ref.name : '';
+    $('#learn-new').classList.toggle('hidden', !!store.get('learnSeen'));
+  }
+
+  async function addRef(f) {
+    if (!f || !song) return;
+    if (!(f.type || '').startsWith('video/') && !/\.(mov|mp4|m4v|webm)$/i.test(f.name)) return toast('That isn’t a video file');
+    toast('Saving the video…');
+    try {
+      // slice() keeps it as a file reference instead of loading it all into memory
+      await DB.putRef({ songId: song.id, blob: f.slice(0, f.size, f.type || 'video/mp4'), name: f.name.replace(/\.[^.]+$/, ''), added: Date.now() });
+    } catch (e) {
+      return toast('Not enough space on your phone for this video');
+    }
+    song.refOffset = null;   // a new video needs its own "1"
+    saveSoon();
+    await loadRef();
+    toast('Choreo video added');
+  }
+  ['#ref-input', '#ref-replace'].forEach((sel) => $(sel).addEventListener('change', (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    addRef(f);
+  }));
+  $('#ref-remove').addEventListener('click', async () => {
+    if (!song || !confirm('Remove the choreo video from this song?')) return;
+    await DB.delRef(song.id);
+    song.refOffset = null;
+    saveSoon();
+    loadRef();
+  });
+
+  function learnMsg(html) {
+    $('#l-msg').innerHTML = html || '';
+    $('#l-msg').classList.toggle('hidden', !html);
+  }
+  function learnHint() {
+    if (!beatLen()) learnMsg('Find the beat on the song page first (play it and tap along), so the video can be counted. Until then, the step buttons move half a second.');
+    else if (!hasOne()) learnMsg('Play or scrub to the very first move of the dance, pause, then tap <b>Set “1”</b>.');
+    else learnMsg('');
+  }
+  $('#l-msg').addEventListener('click', () => learnMsg(''));
+
+  function setLRate(r) {
+    refVideo.playbackRate = r;
+    refVideo.defaultPlaybackRate = r;
+    refVideo.preservesPitch = refVideo.webkitPreservesPitch = true;
+    document.querySelectorAll('[data-lrate]').forEach((b) => b.classList.toggle('on', +b.dataset.lrate === r));
+  }
+
+  async function openLearn() {
+    if (!ref || !song) return;
+    store.set('learnSeen', '1');
+    $('#learn-new').classList.add('hidden');
+    audio.pause();
+    learnOpen = true;
+    refURL = URL.createObjectURL(ref.blob);
+    refVideo.src = refURL;
+    refVideo.classList.toggle('mirrored', !!song.refMirrored);
+    $('#l-flip').classList.toggle('on', !!song.refMirrored);
+    setLRate(1);
+    stepUntil = null;
+    lLoop = null;
+    lLastBeat = undefined;
+    $('#l-loop').classList.remove('on');
+    $('#learn').classList.remove('hidden');
+    document.body.classList.add('no-scroll');
+    learnHint();
+    try { lWake = navigator.wakeLock ? await navigator.wakeLock.request('screen') : null; } catch { lWake = null; }
+  }
+
+  function closeLearn() {
+    if (!learnOpen) return;
+    learnOpen = false;
+    refVideo.pause();
+    stopLCam();
+    refVideo.removeAttribute('src');
+    refVideo.load();
+    if (refURL) URL.revokeObjectURL(refURL);
+    refURL = null;
+    $('#learn').classList.add('hidden');
+    document.body.classList.remove('no-scroll');
+    if (lWake) { lWake.release().catch(() => {}); lWake = null; }
+  }
+
+  // "count ▶": play to the end of this count, then freeze on the pose
+  function stepNext() {
+    const vt = refVideo.currentTime;
+    const dur = refVideo.duration || Infinity;
+    let target = vCountStart(vCountAt(vt) + 1);
+    if (target - vt < 0.05) target = vCountStart(vCountAt(vt) + 2);
+    if (target > dur - 0.05) target = dur - 0.05;
+    if (target <= vt) return;
+    stepUntil = target;
+    refVideo.play().catch(() => {});
+    // Backup in case animation frames stutter: freeze on time regardless
+    clearTimeout(stepTimer);
+    stepTimer = setTimeout(() => freezeStep(target), ((target - vt) / refVideo.playbackRate) * 1000 + 60);
+  }
+  let stepTimer = null;
+  function freezeStep(target) {
+    if (stepUntil !== target) return;
+    refVideo.pause();
+    refVideo.currentTime = target + 0.02;   // just inside the count, so the frame shows its pose
+    stepUntil = null;
+  }
+  // "◀ count": back to the start of the previous count (so ▶ replays it)
+  function stepPrev() {
+    stepUntil = null;
+    refVideo.pause();
+    const vt = refVideo.currentTime;
+    let target = vCountStart(vCountAt(vt));
+    if (vt - target < 0.15) target = vCountStart(vCountAt(vt) - 1);
+    refVideo.currentTime = Math.max(0, target);
+  }
+
+  function tickLearn() {
+    const v = refVideo;
+    const vt = v.currentTime;
+    if (stepUntil !== null && !v.paused && vt >= stepUntil - 0.03) freezeStep(stepUntil);
+    if (lLoop && !v.paused && stepUntil === null && (vt >= lLoop[1] - 0.03 || vt < lLoop[0] - 0.3)) v.currentTime = lLoop[0];
+    $('#l-play').textContent = v.paused ? '▶' : '❚❚';
+    const dur = v.duration;
+    if (!lSeeking && isFinite(dur) && dur > 0) $('#l-seek').value = String(Math.round((vt / dur) * 1000));
+
+    const beat = beatLen() && hasOne() ? vBeatAt(vt) : null;
+    if (beat === lLastBeat) return;
+    lLastBeat = beat;
+    $('#l-counts').classList.toggle('off', beat === null || beat < 0);
+    if (beat === null) {
+      $('#l-label').textContent = beatLen() ? 'tap Set “1” on the first move' : 'set the beat on the song page';
+      $('#l-big').textContent = '';
+    } else if (beat < 0) {
+      $('#l-label').textContent = 'before the dance';
+      $('#l-big').textContent = '';
+    } else {
+      $('#l-label').textContent = `${eightWord()} ${Math.floor(beat / 8) + 1}`;
+      $('#l-big').textContent = String((beat % 8) + 1);
+      lCountEls.forEach((c, i) => c.classList.toggle('lit', i === beat % 8));
+    }
+  }
+
+  async function startLCam() {
+    stopLCam();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return toast("This browser can't use the camera");
+    try {
+      lCamStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } } });
+    } catch (e) {
+      $('#l-me').classList.remove('on');
+      return toast('The camera is off for this app. Allow it in Settings → Safari → Camera.');
+    }
+    if (!learnOpen || !$('#l-me').classList.contains('on')) return stopLCam();
+    lCam.srcObject = lCamStream;
+    lCam.play().catch(() => {});
+    $('#l-cam-pane').classList.remove('hidden');
+  }
+  function stopLCam() {
+    if (lCamStream) lCamStream.getTracks().forEach((t) => t.stop());
+    lCamStream = null;
+    lCam.srcObject = null;
+    $('#l-cam-pane').classList.add('hidden');
+  }
+
+  $('#open-learn').addEventListener('click', openLearn);
+  $('#l-close').addEventListener('click', closeLearn);
+  $('#l-play').addEventListener('click', () => {
+    stepUntil = null;
+    if (refVideo.paused) refVideo.play().catch(() => {}); else refVideo.pause();
+  });
+  $('#l-next').addEventListener('click', stepNext);
+  $('#l-prev').addEventListener('click', stepPrev);
+  document.querySelectorAll('[data-lrate]').forEach((b) => b.addEventListener('click', () => setLRate(+b.dataset.lrate)));
+  $('#l-flip').addEventListener('click', () => {
+    song.refMirrored = !song.refMirrored;
+    refVideo.classList.toggle('mirrored', song.refMirrored);
+    $('#l-flip').classList.toggle('on', song.refMirrored);
+    saveSoon();
+  });
+  $('#l-me').addEventListener('click', () => {
+    const on = !$('#l-me').classList.contains('on');
+    $('#l-me').classList.toggle('on', on);
+    if (on) startLCam(); else stopLCam();
+  });
+  $('#l-one').addEventListener('click', () => {
+    if (!beatLen()) return toast('Find the beat on the song page first');
+    refVideo.pause();
+    stepUntil = null;
+    song.refOffset = refVideo.currentTime;
+    saveSoon();
+    lLastBeat = undefined;
+    lLoop = null;
+    $('#l-loop').classList.remove('on');
+    learnHint();
+    toast('Got it, counting starts here');
+  });
+  $('#l-loop').addEventListener('click', () => {
+    if (lLoop) { lLoop = null; $('#l-loop').classList.remove('on'); return; }
+    if (!beatLen() || !hasOne()) return toast('Tap Set “1” on the first move first');
+    const eight = Math.max(0, Math.floor(vBeatAt(refVideo.currentTime) / 8));
+    // The last 8-count can run past the end of the video
+    lLoop = [vCountStart(eight * 8), Math.min(vCountStart(eight * 8 + 8), (refVideo.duration || Infinity) - 0.08)];
+    $('#l-loop').classList.add('on');
+    stepUntil = null;
+    refVideo.currentTime = lLoop[0];
+    refVideo.play().catch(() => {});
+  });
+  $('#l-seek').addEventListener('input', (e) => {
+    lSeeking = true;
+    stepUntil = null;
+    if (isFinite(refVideo.duration)) refVideo.currentTime = (e.target.value / 1000) * refVideo.duration;
+  });
+  $('#l-seek').addEventListener('change', () => (lSeeking = false));
+  // Refresh the count display on pauses & jumps too, not just animation frames
+  ['pause', 'seeked'].forEach((ev) => refVideo.addEventListener(ev, () => learnOpen && tickLearn()));
+  refVideo.addEventListener('ended', () => {
+    stepUntil = null;
+    if (lLoop) { refVideo.currentTime = lLoop[0]; refVideo.play().catch(() => {}); }
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!learnOpen) return;
+    if (document.hidden) { refVideo.pause(); stopLCam(); }
+    else if ($('#l-me').classList.contains('on')) startLCam();
+  });
+
+  // ── Comparing a take with the choreo video ──────────────────────────────
+  const tvRef = $('#tv-ref');
+  let compareOn = store.get('compareOn') === '1';
+  let compareURL = null;
+  const canCompare = () => !!ref && !!beatLen() && hasOne();
+
+  function setCompare(on, remember = true) {
+    compareOn = on;
+    if (remember) store.set('compareOn', on ? '1' : '0');
+    $('#tv-compare').classList.toggle('on', on);
+    $('.tv-ref').classList.toggle('hidden', !on);
+    $('.tv-you').classList.toggle('hidden', !on);
+    if (on && !compareURL) {
+      compareURL = URL.createObjectURL(ref.blob);
+      tvRef.src = compareURL;
+      tvRef.classList.toggle('mirrored', !!song.refMirrored);
+    }
+    if (!on) tvRef.pause();
+  }
+  function compareStart(t) {
+    $('#tv-compare').classList.toggle('hidden', !ref);
+    if (ref && canCompare()) {
+      tvRef.playbackRate = tvRef.defaultPlaybackRate = t.rate;
+      setCompare(store.get('compareOn') === '1', false);
+    } else {
+      setCompare(false, false);
+    }
+  }
+  function compareStop() {
+    tvRef.pause();
+    tvRef.removeAttribute('src');
+    tvRef.load();
+    if (compareURL) URL.revokeObjectURL(compareURL);
+    compareURL = null;
+    $('.tv-ref').classList.add('hidden');
+    $('.tv-you').classList.add('hidden');
+  }
+  // Keep the choreo video on the same count as the take
+  function tickCompare(songT, playing) {
+    if (!compareOn || !compareURL) return;
+    const target = song.refOffset + (songT - song.offset);
+    const dur = tvRef.duration;
+    if (!playing || target < 0 || (isFinite(dur) && target > dur)) {
+      if (!tvRef.paused) tvRef.pause();
+      // While paused, show the matching pose (without re-seeking every frame)
+      if (!playing && Math.abs(tvRef.currentTime - Math.max(0, target)) > 0.05) tvRef.currentTime = Math.max(0, target);
+      return;
+    }
+    if (Math.abs(tvRef.currentTime - target) > 0.15) tvRef.currentTime = target;
+    if (tvRef.paused) tvRef.play().catch(() => {});
+  }
+  $('#tv-compare').addEventListener('click', () => {
+    if (!canCompare()) return toast('Open Learn mode and tap Set “1” on the first move first');
+    setCompare(!compareOn);
+  });
+
+  // ── Practice tips & what's new ──────────────────────────────────────────
+  const openTips = () => $('#tips').classList.remove('hidden');
+  const hideWhatsNew = () => { $('#whatsnew').classList.add('hidden'); store.set('wnLearn', '1'); };
+  $('#tips-btn').addEventListener('click', openTips);
+  $('#tips-close').addEventListener('click', () => $('#tips').classList.add('hidden'));
+  $('#wn-tips').addEventListener('click', () => { hideWhatsNew(); openTips(); });
+  $('#wn-close').addEventListener('click', hideWhatsNew);
+
   // ── Frame loop ──────────────────────────────────────────────────────────
   function frame() {
     if (song && $('#view-player').classList.contains('active')) {
@@ -1007,6 +1335,7 @@
       if (mirrorOpen) updateMirror(t);
     }
     if (viewing) tickTakeView();
+    if (learnOpen) tickLearn();
     requestAnimationFrame(frame);
   }
 
@@ -1086,6 +1415,11 @@
       text: 'Tap <b>Mirror & record</b> to see yourself with the counts on screen. Prop your phone up, tap the <b>red button</b>, get in place, and you’re counted in with a 5-6-7-8. Pick an 8-count first and it records just that part. Watch your takes back with the music, or save them to Photos.',
     },
     {
+      art: `<div class="ia-learn ia-mock"><div><b>5</b></div><div></div><span class="ia-step">count ▶</span></div>`,
+      title: 'Learn the choreo',
+      text: 'Add a dance video under <b>Learn the choreo</b>. Pause on the first move and tap <b>Set “1”</b>, then <b>count ▶</b> plays one move at a time. Mirror it, slow it to ¼×, or tap <b>Me</b> to dance side by side with it.',
+    },
+    {
       art: `<div class="ia-note ia-mock"><small>Notes for ${eightWord()} 2</small>hit on 5, melt down 6-7, roll out on 8</div>`,
       title: 'Write it down',
       text: 'Every 8-count gets its own notes, and a little dot shows which ones have them. Everything saves by itself, right on your phone.',
@@ -1095,7 +1429,7 @@
       title: 'Make it yours',
       text: 'Switch between <b>Contemporary</b> and <b>Hip Hop</b> styles at the top whenever you like.' +
         (standalone ? '' : ' To keep it on your home screen, tap <b>Share</b> → <b>Add to Home Screen</b>.') +
-        '<br><br>P.S. little hearts like being tapped ♥',
+        ' More ideas are in <b>✦ Practice tips</b> on the home screen.<br><br>P.S. little hearts like being tapped ♥',
     },
   ];
   let introAt = 0;
@@ -1169,6 +1503,8 @@
   requestAnimationFrame(frame);
   if (!store.get('introSeen')) openIntro();
   if (!store.get('mirrorSeen')) $('#mirror-new').classList.remove('hidden');
+  if (!store.get('introSeen')) store.set('wnLearn', '1');   // new users get the tour instead
+  if (!store.get('wnLearn')) $('#whatsnew').classList.remove('hidden');
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});

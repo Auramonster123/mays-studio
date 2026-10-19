@@ -35,6 +35,15 @@
       <h1 class="brand">May's Studio</h1>
     </header>
 
+    <div id="whatsnew" class="card whatsnew hidden">
+      <b>New in your studio ✦</b>
+      <p class="small muted">Learn mode: add a choreo video to a song and go through it count by count, mirrored, slowed down, and side by side with you. Plus a page of practice tips.</p>
+      <div class="whatsnew-btns">
+        <button id="wn-tips" class="btn small-btn primary">See the tips</button>
+        <button id="wn-close" class="btn small-btn ghost">Got it</button>
+      </div>
+    </div>
+
     <div id="song-list" class="song-list"></div>
 
     <div id="empty" class="empty hidden">
@@ -48,6 +57,7 @@
         ＋ Add a song
       </label>
       <button id="demo-btn" class="btn ghost">Try a practice beat</button>
+      <button id="tips-btn" class="btn ghost">✦ Practice tips</button>
     </div>
 
     <footer class="foot">
@@ -100,6 +110,28 @@
         <span id="mirror-new" class="new-pill hidden">NEW</span>
       </button>
       <button id="open-takes" class="btn takes-btn">Takes<span id="takes-n" class="count-badge"></span></button>
+    </div>
+
+    <div class="card learn-card">
+      <div class="card-head">
+        <h3>Learn the choreo</h3>
+        <span id="learn-new" class="new-pill hidden">NEW</span>
+      </div>
+      <div id="learn-empty">
+        <p class="small muted learn-text">Add the dance video from your teacher or a tutorial, then go through it movement by movement.</p>
+        <label class="btn learn-add">
+          <input id="ref-input" type="file" accept="video/*" hidden>
+          ＋ Add choreo video
+        </label>
+      </div>
+      <div id="learn-has" class="hidden">
+        <button id="open-learn" class="btn primary learn-btn">Learn it count by count</button>
+        <div class="learn-meta">
+          <span id="ref-name" class="small muted"></span>
+          <label class="link-btn"><input id="ref-replace" type="file" accept="video/*" hidden>Replace</label>
+          <button id="ref-remove" class="link-btn">Remove</button>
+        </div>
+      </div>
     </div>
 
     <div class="card beat-card">
@@ -195,13 +227,76 @@
     <div class="tv-top">
       <button id="tv-close" class="m-btn" aria-label="Close">✕</button>
       <div class="tv-title"><b id="tv-title"></b><small id="tv-count"></small></div>
+      <button id="tv-compare" class="m-pill hidden" aria-label="Compare with the choreo video">Compare</button>
       <button id="tv-flip" class="m-btn" aria-label="Flip video">⇋</button>
     </div>
-    <video id="take-video" playsinline muted></video>
+    <div class="tv-stage">
+      <div class="tv-pane tv-ref hidden"><video id="tv-ref" playsinline muted></video><span class="tv-tag">choreo</span></div>
+      <div class="tv-pane"><video id="take-video" playsinline muted></video><span class="tv-tag tv-you hidden">you</span></div>
+    </div>
     <div class="tv-bottom">
       <button id="tv-play" class="m-btn" aria-label="Play">▶</button>
       <input id="tv-seek" type="range" min="0" max="1000" value="0" aria-label="Scrub">
       <span id="tv-time" class="tv-time">0:00</span>
+    </div>
+  </div>
+
+  <!-- ───────────── Learn mode (choreo video) ───────────── -->
+  <div id="learn" class="learn hidden" aria-label="Learn mode">
+    <div class="l-top">
+      <button id="l-close" class="m-btn" aria-label="Close">✕</button>
+      <div id="l-label" class="m-label l-label"></div>
+      <button id="l-flip" class="m-pill" aria-label="Mirror the video">⇋ Mirror</button>
+      <button id="l-me" class="m-pill" aria-label="Show my camera next to the video">Me</button>
+    </div>
+    <div id="l-stage" class="l-stage">
+      <div class="l-pane">
+        <video id="ref-video" playsinline></video>
+        <div id="l-big" class="l-big"></div>
+        <div id="l-msg" class="l-msg hidden"></div>
+      </div>
+      <div id="l-cam-pane" class="l-pane l-cam hidden">
+        <video id="l-cam" class="mirrored" playsinline muted autoplay></video>
+        <span class="tv-tag">you</span>
+      </div>
+    </div>
+    <div id="l-counts" class="m-counts l-counts"></div>
+    <div class="l-bottom">
+      <input id="l-seek" type="range" min="0" max="1000" value="0" aria-label="Scrub the video">
+      <div class="l-row">
+        <button id="l-prev" class="m-pill l-step" aria-label="Back one count">◀ count</button>
+        <button id="l-play" class="m-btn l-playbtn" aria-label="Play">▶</button>
+        <button id="l-next" class="m-pill l-step" aria-label="Play one count">count ▶</button>
+      </div>
+      <div class="l-row">
+        <div class="l-speeds" role="group" aria-label="Video speed">
+          <button data-lrate="0.25">¼×</button><button data-lrate="0.5">½×</button><button data-lrate="0.75">¾×</button><button data-lrate="1" class="on">1×</button>
+        </div>
+        <button id="l-loop" class="m-pill" aria-label="Loop this 8-count">⟲ 8</button>
+        <button id="l-one" class="m-pill" aria-label="Mark the first count of the dance">Set “1”</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ───────────── Practice tips ───────────── -->
+  <div id="tips" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="tips-title">
+    <div class="sheet-card">
+      <div class="card-head">
+        <h3 id="tips-title">Practice tips</h3>
+        <button id="tips-close" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <ol class="tips-list">
+        <li><b>Learn one count at a time.</b> In Learn mode, pause on the first move of the dance and tap <b>Set “1”</b>. Then <b>count ▶</b> plays exactly one count and freezes on the pose.</li>
+        <li><b>Mirror the teacher.</b> If they face you, tap <b>⇋ Mirror</b> so their left is your left.</li>
+        <li><b>Copy side by side.</b> Tap <b>Me</b> in Learn mode to see yourself next to the video.</li>
+        <li><b>Drill the hard part.</b> Tap the 8-counts you're working on, hit <b>Loop</b> and slow it to 0.75×. Speed it up once it feels easy.</li>
+        <li><b>Slow songs, faster counts.</b> If the BPM feels too slow for how your teacher counts (like 63), double it in the BPM box (126).</li>
+        <li><b>Record and compare.</b> Record a take in the mirror, then tap <b>Compare</b> while watching it to see it next to the choreo.</li>
+        <li><b>Use your teacher's music.</b> Ask for the exact cut they dance to. No file? Record it with Voice Memos, then Share → Save to Files.</li>
+        <li><b>Allow the camera.</b> The first time you open the mirror, tap Allow. If you said no, turn it on in Settings → Safari → Camera.</li>
+        <li><b>Saved videos are silent.</b> The music plays when you watch takes here in the app.</li>
+        <li><b>Keep it on your home screen.</b> That's what keeps your songs, notes and takes saved on your phone.</li>
+      </ol>
     </div>
   </div>
 

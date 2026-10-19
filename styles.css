@@ -382,3 +382,63 @@ html[data-mode="contemporary"] .brand { font-style: italic; }
   .m-rec { width: 66px; height: 66px; }
   .m-rec span { width: 48px; height: 48px; }
 }
+
+/* ── Learn mode (choreo video) ──────────────────────────── */
+.learn-text { margin: 0 0 10px; }
+.learn-add, .learn-btn { width: 100%; }
+.learn-meta { display: flex; align-items: center; gap: 14px; margin-top: 10px; }
+.learn-meta .small { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link-btn { background: none; border: 0; padding: 4px 0; color: var(--accent); font-size: 14px; cursor: pointer; }
+.whatsnew { border-color: var(--accent); margin-bottom: 14px; }
+.whatsnew p { margin: 6px 0 10px; }
+.whatsnew-btns { display: flex; gap: 8px; }
+.tips-list { margin: 0; padding-left: 22px; display: grid; gap: 12px; color: var(--muted); }
+.tips-list b { color: var(--text); font-weight: 600; }
+
+.learn { position: fixed; inset: 0; z-index: 45; background: #000; color: #fff; display: flex; flex-direction: column; }
+.l-top { display: flex; align-items: center; gap: 8px; padding: calc(env(safe-area-inset-top) + 10px) 12px 8px; }
+.l-label { flex: 1; min-width: 0; text-align: center; margin: 0; }
+.l-stage { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
+.l-pane { position: relative; flex: 1; min-height: 0; background: #0d0d0f; overflow: hidden; }
+.l-pane video { width: 100%; height: 100%; object-fit: contain; display: block; }
+.l-cam video { object-fit: cover; }
+.l-big {
+  position: absolute; top: 8px; left: 12px; pointer-events: none; line-height: 1;
+  font-family: var(--display); font-weight: 700; font-size: 72px; color: var(--accent); text-shadow: 0 2px 18px rgba(0, 0, 0, .7);
+}
+.l-msg {
+  position: absolute; left: 10px; right: 10px; bottom: 10px; padding: 10px 12px; border-radius: 14px;
+  background: rgba(0, 0, 0, .72); font-size: 14px; line-height: 1.45; text-align: center; cursor: pointer;
+}
+.l-counts { flex: none; padding: 8px 12px 0; }
+.l-bottom { flex: none; display: grid; gap: 10px; padding: 8px 12px calc(env(safe-area-inset-bottom) + 12px); }
+#l-seek { width: 100%; accent-color: var(--accent); }
+.l-row { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.l-step { flex: 1; justify-content: center; height: 52px; font-size: 15px; }
+.l-playbtn { width: 58px; height: 58px; font-size: 20px; }
+.l-speeds { flex: 1; display: flex; gap: 4px; }
+.l-speeds button {
+  flex: 1; height: 40px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, .22);
+  background: rgba(255, 255, 255, .08); color: #fff; font-weight: 600; font-size: 14px;
+}
+.l-speeds button.on, .m-pill.on { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+
+/* comparing a take with the choreo */
+.tv-stage { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
+.tv-pane { position: relative; flex: 1; min-height: 0; }
+.tv-pane video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+.tv-tag {
+  position: absolute; top: 8px; left: 8px; padding: 3px 8px; border-radius: 999px; background: rgba(0, 0, 0, .55);
+  font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; pointer-events: none;
+}
+
+@media (orientation: landscape) {
+  .l-stage, .tv-stage { flex-direction: row; }
+}
+
+/* tour mock-up for Learn mode */
+.ia-learn { position: relative; width: 150px; display: grid; gap: 4px; }
+.ia-learn > div { height: 52px; border-radius: 12px; border: 1px solid var(--line); background: linear-gradient(160deg, #3a2a40, #120d16); position: relative; }
+.ia-learn > div b { position: absolute; top: 4px; left: 8px; font-family: var(--display); font-size: 30px; color: var(--accent); line-height: 1; }
+.ia-learn > div:nth-child(2)::after { content: "you"; position: absolute; top: 5px; left: 7px; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.ia-step { justify-self: center; margin-top: 4px; padding: 6px 14px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 13px; font-weight: 600; }

@@ -6,31 +6,46 @@
   const WINDOW_SECS = 6;      // seconds of music visible in the waveform
   const PLAYHEAD_AT = 0.3;    // playhead position (fraction of width)
 
-  // ── Storage (IndexedDB: songs + their notes live on her phone) ──────────
+  // ── Storage (IndexedDB: songs, notes & video takes live on her phone) ───
   const DB = {
     db: null,
     open() {
       if (this.db) return Promise.resolve(this.db);
       return new Promise((resolve, reject) => {
-        const req = indexedDB.open('mays-studio', 1);
-        req.onupgradeneeded = () => req.result.createObjectStore('songs', { keyPath: 'id' });
-        req.onsuccess = () => resolve((this.db = req.result));
+        const req = indexedDB.open('mays-studio', 2);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains('songs')) db.createObjectStore('songs', { keyPath: 'id' });
+          if (!db.objectStoreNames.contains('takes')) db.createObjectStore('takes', { keyPath: 'id' }).createIndex('song', 'songId');
+        };
+        req.onsuccess = () => {
+          this.db = req.result;
+          // An older copy of the app open elsewhere shouldn't block upgrades
+          this.db.onversionchange = () => { this.db.close(); this.db = null; };
+          resolve(this.db);
+        };
         req.onerror = () => reject(req.error);
       });
     },
-    async tx(mode, fn) {
+    async tx(name, mode, fn) {
       const db = await this.open();
       return new Promise((resolve, reject) => {
-        const t = db.transaction('songs', mode);
-        const req = fn(t.objectStore('songs'));
+        const t = db.transaction(name, mode);
+        const req = fn(t.objectStore(name));
         t.oncomplete = () => resolve(req && req.result);
         t.onerror = () => reject(t.error);
       });
     },
-    all() { return this.tx('readonly', (s) => s.getAll()); },
-    get(id) { return this.tx('readonly', (s) => s.get(id)); },
-    put(rec) { return this.tx('readwrite', (s) => s.put(rec)); },
-    del(id) { return this.tx('readwrite', (s) => s.delete(id)); },
+    all() { return this.tx('songs', 'readonly', (s) => s.getAll()); },
+    get(id) { return this.tx('songs', 'readonly', (s) => s.get(id)); },
+    put(rec) { return this.tx('songs', 'readwrite', (s) => s.put(rec)); },
+    del(id) { return this.tx('songs', 'readwrite', (s) => s.delete(id)); },
+    takesFor(songId) { return this.tx('takes', 'readonly', (s) => s.index('song').getAll(songId)); },
+    putTake(rec) { return this.tx('takes', 'readwrite', (s) => s.put(rec)); },
+    delTake(id) { return this.tx('takes', 'readwrite', (s) => s.delete(id)); },
+    async delTakesFor(songId) {
+      for (const t of await this.takesFor(songId)) await this.delTake(t.id);
+    },
   };
 
   const store = {
@@ -196,10 +211,14 @@
     }
     renderEights();
     renderSelection();
+    refreshTakeCount();
     show('view-player');
   }
 
   function closeSong() {
+    closeTakeView();
+    closeMirror();
+    $('#takes').classList.add('hidden');
     audio.pause();
     if (song) DB.put(song);
     song = null;
@@ -209,9 +228,10 @@
   $('#back').addEventListener('click', closeSong);
 
   $('#delete-song').addEventListener('click', async () => {
-    if (!song || !confirm(`Remove “${song.name}” and its notes?`)) return;
+    if (!song || !confirm(`Remove “${song.name}” with its notes and video takes?`)) return;
     audio.pause();
     await DB.del(song.id);
+    await DB.delTakesFor(song.id);
     song = null;
     renderLibrary();
     show('view-library');
@@ -224,6 +244,7 @@
   audio.addEventListener('play', () => (playBtn.textContent = '❚❚'));
   audio.addEventListener('pause', () => (playBtn.textContent = '▶'));
   audio.addEventListener('ended', () => {
+    if (take) return stopTake();
     if (looping && sel) { seek(loopBounds()[0]); play(); }
   });
 
@@ -533,18 +554,459 @@
   wrap.addEventListener('pointerup', endDrag);
   wrap.addEventListener('pointercancel', endDrag);
 
+  // ── Mirror & takes ──────────────────────────────────────────────────────
+  // The camera records video only: turning the mic on makes iPhones play music
+  // quietly through the earpiece. When she watches a take, the app plays the
+  // song in sync instead, so the music is always clean.
+  const cam = $('#cam');
+  const RATES = [0.5, 0.75, 0.9, 1];
+  const READY_SECS = [0, 5, 10];
+  let mirrorOpen = false, camStream = null, facing = 'user', wakeLock = null;
+  let armed = null;       // waiting to record: { start, phase: 'ready' | 'countin' | 'preroll' }
+  let take = null;        // recording in progress
+  let viewing = null;     // take being watched
+  let readySecs = parseInt(store.get('readySecs') ?? '5', 10);
+  if (!READY_SECS.includes(readySecs)) readySecs = 5;
+
+  $('#m-counts').innerHTML = Array.from({ length: 8 }, (_, i) => `<div class="mcount">${i + 1}</div>`).join('');
+  const mCountEls = [...document.querySelectorAll('.mcount')];
+  let mLastBeat;
+
+  function mirrorMsg(html) {
+    $('#m-msg').innerHTML = html || '';
+    $('#m-msg').classList.toggle('hidden', !html);
+  }
+
+  async function startCam() {
+    stopCam();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      mirrorMsg("This browser can't use the camera.<small>Open May's Studio in Safari.</small>");
+      return false;
+    }
+    try {
+      camStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } },
+      });
+    } catch (e) {
+      mirrorMsg('The camera is turned off for this app.<small>Allow it in the Settings app under Safari → Camera, then open the mirror again.</small>');
+      return false;
+    }
+    if (!mirrorOpen) { stopCam(); return false; }   // closed while the permission prompt was up
+    cam.srcObject = camStream;
+    cam.classList.toggle('mirrored', facing === 'user');
+    cam.play().catch(() => {});
+    mirrorMsg('');
+    return true;
+  }
+
+  function stopCam() {
+    if (camStream) camStream.getTracks().forEach((t) => t.stop());
+    camStream = null;
+    cam.srcObject = null;
+  }
+
+  async function openMirror() {
+    if (!song) return;
+    mirrorOpen = true;
+    store.set('mirrorSeen', '1');
+    $('#mirror-new').classList.add('hidden');
+    $('#mirror').classList.remove('hidden');
+    document.body.classList.add('no-scroll');
+    mLastBeat = undefined;
+    renderMirrorBar();
+    refreshTakeCount();
+    try { wakeLock = navigator.wakeLock ? await navigator.wakeLock.request('screen') : null; } catch { wakeLock = null; }
+    await startCam();
+  }
+
+  function closeMirror() {
+    if (!mirrorOpen) return;
+    if (take) stopTake();
+    disarm();
+    mirrorOpen = false;
+    stopCam();
+    $('#mirror').classList.add('hidden');
+    document.body.classList.remove('no-scroll');
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  }
+
+  // Where a take starts: the selected 8-count, else the start of the current one
+  function takeStart() {
+    if (sel && beatLen()) return eightStart(sel.from);
+    const t = audio.currentTime;
+    if (beatLen() && beatAt(t) >= 0) return eightStart(Math.floor(beatAt(t) / 8));
+    return t;
+  }
+
+  function sectionText(from, to) {
+    const w = eightWord();
+    return to > from ? `${w}s ${from + 1}–${to + 1}` : `${w} ${from + 1}`;
+  }
+
+  function renderMirrorBar() {
+    $('#m-info').textContent = sel && beatLen()
+      ? `Records ${sectionText(sel.from, sel.to)}, then stops by itself`
+      : 'Records from here until you tap stop';
+    $('#m-speed').textContent = `${audio.playbackRate}×`;
+    $('#m-ready').textContent = readySecs ? `⏱ ${readySecs}s` : '⏱ off';
+    $('#m-play').textContent = audio.paused ? '▶' : '❚❚';
+  }
+
+  function updateMirror(t) {
+    const b = beatLen();
+    if (armed && armed.phase === 'preroll' && b) {
+      // The music is already playing: count her in on the 4 beats before the "1"
+      if (t >= armed.start - 0.02) beginRecording();
+      else showCountIn(String(clamp(8 - Math.ceil((armed.start - t) / b - 1e-3) + 1, 5, 8)), '', 'count');
+    }
+    if (take) $('#m-rectime span').textContent = fmt((performance.now() - take.t0) / 1000);
+
+    const beat = b ? beatAt(t) : null;
+    if (beat === mLastBeat) return;
+    mLastBeat = beat;
+    $('#m-counts').classList.toggle('off', beat === null);
+    if (beat === null) {
+      $('#m-label').textContent = 'set the beat on the song page to see counts';
+      return;
+    }
+    $('#m-label').textContent = beat < 0 ? 'intro' : `${eightWord()} ${Math.floor(beat / 8) + 1}`;
+    mCountEls.forEach((c, i) => c.classList.toggle('lit', beat >= 0 && i === beat % 8));
+  }
+
+  let lastCountIn = '';
+  function showCountIn(big, small, cls) {
+    const key = big + small;
+    if (key === lastCountIn) return;
+    lastCountIn = key;
+    const el = $('#m-countin');
+    el.className = 'm-countin';
+    void el.offsetWidth;   // restart the pop animation
+    el.className = `m-countin ${cls} pop`;
+    el.innerHTML = `<b>${big}</b>${small ? `<small>${small}</small>` : ''}`;
+  }
+  function hideCountIn() { lastCountIn = ''; $('#m-countin').className = 'm-countin hidden'; }
+
+  // Cancellable pause used while counting down
+  let waitTimer = null, waitDone = null;
+  const wait = (ms) => new Promise((resolve) => {
+    waitDone = resolve;
+    waitTimer = setTimeout(() => { waitDone = null; resolve(!!armed); }, ms);
+  });
+
+  function disarm() {
+    clearTimeout(waitTimer);
+    if (waitDone) { waitDone(false); waitDone = null; }
+    if (armed && armed.phase === 'preroll') audio.pause();
+    armed = null;
+    hideCountIn();
+    $('#mirror').classList.remove('arming');
+  }
+
+  const pickMime = () => ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm']
+    .find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
+
+  async function armTake() {
+    if (take || armed) return;
+    if (!camStream) return toast('The camera needs to be on to record');
+    if (!window.MediaRecorder) return toast("This iPhone can't record here yet. Updating iOS should fix it.");
+    const start = takeStart();
+    audio.pause();
+    seek(start);
+    armed = { start, phase: 'ready' };
+    $('#mirror').classList.add('arming');
+    for (let s = readySecs; s > 0; s--) {
+      showCountIn('Get in place', String(s), 'ready');
+      if (!(await wait(1000))) return;
+    }
+    const b = beatLen();
+    if (b && start - 4 * b >= 0) {
+      // Start the music 4 beats early so the 5-6-7-8 is the real music
+      armed.phase = 'preroll';
+      seek(start - 4 * b);
+      await startMusic();
+      return;   // updateMirror() starts the recording on the "1"
+    }
+    armed.phase = 'countin';
+    const beatMs = b ? (b / audio.playbackRate) * 1000 : 1000;
+    for (const w of b ? ['5', '6', '7', '8'] : ['3', '2', '1']) {
+      showCountIn(w, '', 'count');
+      if (!(await wait(beatMs))) return;
+    }
+    if (!(await startMusic())) return;
+    beginRecording();
+  }
+
+  async function startMusic() {
+    audio.muted = false;
+    try {
+      await audio.play();
+      return !!armed;
+    } catch (e) {
+      disarm();
+      renderMirrorBar();
+      toast('The music didn’t start. Tap ▶ once, then try again.');
+      return false;
+    }
+  }
+
+  function beginRecording() {
+    if (!armed || !camStream) return;
+    hideCountIn();
+    const mime = pickMime();
+    let recorder;
+    try {
+      recorder = new MediaRecorder(camStream, mime ? { mimeType: mime } : undefined);
+    } catch (e) {
+      disarm();
+      audio.pause();
+      return toast("Couldn't start recording");
+    }
+    const chunks = [];
+    take = {
+      recorder, chunks, songId: song.id, mime: recorder.mimeType || mime || 'video/mp4',
+      rate: audio.playbackRate, from: sel ? sel.from : null, to: sel ? sel.to : null,
+      mirrored: facing === 'user', t0: performance.now(), songAt0: songTime(),
+    };
+    armed = null;
+    $('#mirror').classList.remove('arming');
+    $('#mirror').classList.add('recording');
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    recorder.onstart = () => { if (take && take.recorder === recorder) { take.t0 = performance.now(); take.songAt0 = songTime(); } };
+    recorder.start(1000);
+  }
+
+  function stopTake() {
+    if (!take) return;
+    const t = take;
+    take = null;
+    t.duration = (performance.now() - t.t0) / 1000;
+    $('#mirror').classList.remove('recording');
+    audio.pause();
+    renderMirrorBar();
+    t.recorder.onstop = async () => {
+      const blob = new Blob(t.chunks, { type: t.mime.split(';')[0] });
+      if (!blob.size || t.duration < 0.5) return toast("That take was too short to save");
+      const n = (await DB.takesFor(t.songId)).reduce((m, x) => Math.max(m, x.n), 0) + 1;
+      await DB.putTake({
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        songId: t.songId, n, blob, mime: blob.type, songAt0: t.songAt0, rate: t.rate,
+        from: t.from, to: t.to, mirrored: t.mirrored, duration: t.duration, added: Date.now(),
+      });
+      toast(`Take ${n} saved`);
+      refreshTakeCount();
+    };
+    if (t.recorder.state !== 'inactive') t.recorder.stop();
+  }
+
+  $('#open-mirror').addEventListener('click', openMirror);
+  $('#m-close').addEventListener('click', closeMirror);
+  $('#m-flip').addEventListener('click', () => {
+    if (take || armed) return;
+    facing = facing === 'user' ? 'environment' : 'user';
+    startCam();
+  });
+  // iPhones only let audio start from a tap. The music for a take starts after
+  // the countdown, so "unlock" it by starting it silently during the tap itself.
+  function unlockAudio() {
+    if (!audio.paused) return;
+    audio.muted = true;
+    const p = audio.play();
+    const unmute = () => { audio.muted = false; };
+    if (p && p.then) p.then(unmute, unmute); else unmute();
+  }
+
+  $('#m-rec').addEventListener('click', () => {
+    if (take) stopTake();
+    else if (armed) { disarm(); audio.pause(); renderMirrorBar(); }
+    else { unlockAudio(); armTake(); }
+  });
+  $('#m-play').addEventListener('click', () => {
+    if (take || armed) return;
+    audio.paused ? play() : audio.pause();
+  });
+  $('#m-speed').addEventListener('click', () => {
+    setRate(RATES[(RATES.indexOf(audio.playbackRate) + 1) % RATES.length]);
+    renderMirrorBar();
+  });
+  $('#m-ready').addEventListener('click', () => {
+    readySecs = READY_SECS[(READY_SECS.indexOf(readySecs) + 1) % READY_SECS.length];
+    store.set('readySecs', String(readySecs));
+    renderMirrorBar();
+  });
+  audio.addEventListener('play', () => mirrorOpen && renderMirrorBar());
+  audio.addEventListener('pause', () => mirrorOpen && renderMirrorBar());
+
+  document.addEventListener('visibilitychange', () => {
+    if (!mirrorOpen) return;
+    if (document.hidden) {
+      // iOS turns the camera off in the background; save what we have
+      if (take) stopTake();
+      disarm();
+      stopCam();
+    } else {
+      startCam();
+    }
+  });
+
+  // Takes list
+  async function refreshTakeCount() {
+    if (!song) return;
+    const n = (await DB.takesFor(song.id)).length;
+    $('#m-takes-n').textContent = n || '';
+    $('#takes-n').textContent = n || '';
+  }
+
+  let takesShown = [];
+  async function openTakes() {
+    if (!song) return;
+    const list = (await DB.takesFor(song.id)).sort((a, b) => b.added - a.added);
+    takesShown = list;
+    $('#takes-list').innerHTML = list.length ? list.map((t) => {
+      const what = t.from !== null && t.from !== undefined ? sectionText(t.from, t.to) : `from ${fmt(t.songAt0)}`;
+      const when = new Date(t.added).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      return `<div class="take" data-id="${t.id}">
+        <button class="take-play" data-act="play" aria-label="Watch take ${t.n}">▶</button>
+        <div class="take-body"><b>Take ${t.n}</b><small>${esc(what)} · ${t.rate}× · ${fmt(t.duration)} · ${esc(when)}</small></div>
+        <button class="icon-btn" data-act="save" aria-label="Save take ${t.n}">⤓</button>
+        <button class="icon-btn" data-act="del" aria-label="Delete take ${t.n}">✕</button>
+      </div>`;
+    }).join('') : '<p class="takes-empty">No takes yet. Open the mirror and tap the red button to record one.</p>';
+    $('#takes').classList.remove('hidden');
+  }
+
+  $('#open-takes').addEventListener('click', openTakes);
+  $('#m-takes').addEventListener('click', () => { if (!take && !armed) openTakes(); });
+  $('#takes-close').addEventListener('click', () => $('#takes').classList.add('hidden'));
+  $('#takes-list').addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    const id = btn.closest('.take').dataset.id;
+    // No awaiting before play/share: iPhones need them to happen right in the tap
+    const t = takesShown.find((x) => x.id === id);
+    if (!t) return;
+    if (btn.dataset.act === 'play') openTakeView(t);
+    if (btn.dataset.act === 'save') saveTakeFile(t);
+    if (btn.dataset.act === 'del' && confirm(`Delete take ${t.n}?`)) {
+      await DB.delTake(t.id);
+      refreshTakeCount();
+      openTakes();
+    }
+  });
+
+  async function saveTakeFile(t) {
+    const ext = t.mime.includes('mp4') ? 'mp4' : 'webm';
+    const file = new File([t.blob], `${song.name} - take ${t.n}.${ext}`, { type: t.mime });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); } catch (e) { /* she closed the share sheet */ }
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file);
+    a.download = file.name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+
+  // Watching a take, with the song playing in sync
+  const takeVideo = $('#take-video');
+  const takeAudio = new Audio();
+  takeAudio.preload = 'auto';
+  let viewURL = null;
+
+  function openTakeView(t) {
+    viewing = t;
+    audio.pause();
+    viewURL = URL.createObjectURL(t.blob);
+    takeVideo.src = viewURL;
+    takeVideo.classList.toggle('mirrored', !!t.mirrored);
+    takeAudio.src = objectURL;
+    takeAudio.defaultPlaybackRate = takeAudio.playbackRate = t.rate;
+    takeAudio.preservesPitch = takeAudio.webkitPreservesPitch = true;
+    $('#tv-title').textContent = `Take ${t.n}`;
+    $('#tv-count').textContent = '';
+    $('#take-view').classList.remove('hidden');
+    // Start both inside the tap so iOS allows the sound
+    takeAudio.currentTime = t.songAt0;
+    takeVideo.play().catch(() => {});
+    takeAudio.play().catch(() => {});
+  }
+
+  function closeTakeView() {
+    if (!viewing) return;
+    viewing = null;
+    takeVideo.pause();
+    takeAudio.pause();
+    takeVideo.removeAttribute('src');
+    takeVideo.load();
+    URL.revokeObjectURL(viewURL);
+    $('#take-view').classList.add('hidden');
+  }
+
+  function tickTakeView() {
+    const v = takeVideo;
+    const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : viewing.duration;
+    $('#tv-play').textContent = v.paused ? '▶' : '❚❚';
+    $('#tv-time').textContent = fmt(v.currentTime);
+    if (!seekingTake) $('#tv-seek').value = String(Math.round((v.currentTime / dur) * 1000) || 0);
+    const target = takeTarget();
+    if (v.paused || v.ended) {
+      if (!takeAudio.paused) takeAudio.pause();
+    } else if (takeAudio.paused) {
+      takeAudio.currentTime = target;
+      takeAudio.play().catch(() => {});
+    } else if (Math.abs(takeAudio.currentTime - target) > 0.25) {
+      takeAudio.currentTime = target;
+    }
+    if (beatLen()) {
+      const beat = beatAt(target);
+      $('#tv-count').textContent = beat >= 0 ? `${eightWord()} ${Math.floor(beat / 8) + 1} · ${(beat % 8) + 1}` : 'intro';
+    }
+  }
+
+  // Keep the music locked to the video even if the frame loop is paused
+  const takeTarget = () => viewing.songAt0 + takeVideo.currentTime * viewing.rate;
+  ['pause', 'ended', 'waiting'].forEach((ev) => takeVideo.addEventListener(ev, () => takeAudio.pause()));
+  ['playing', 'seeked'].forEach((ev) => takeVideo.addEventListener(ev, () => {
+    if (!viewing) return;
+    takeAudio.currentTime = takeTarget();
+    if (!takeVideo.paused) takeAudio.play().catch(() => {});
+  }));
+
+  let seekingTake = false;
+  $('#tv-close').addEventListener('click', closeTakeView);
+  $('#tv-flip').addEventListener('click', () => takeVideo.classList.toggle('mirrored'));
+  $('#tv-play').addEventListener('click', () => {
+    if (takeVideo.ended) takeVideo.currentTime = 0;
+    if (takeVideo.paused) { takeVideo.play().catch(() => {}); takeAudio.play().catch(() => {}); }
+    else takeVideo.pause();
+  });
+  takeVideo.addEventListener('click', () => $('#tv-play').click());
+  $('#tv-seek').addEventListener('input', (e) => {
+    seekingTake = true;
+    const dur = isFinite(takeVideo.duration) && takeVideo.duration > 0 ? takeVideo.duration : viewing.duration;
+    takeVideo.currentTime = (e.target.value / 1000) * dur;
+    takeAudio.currentTime = takeTarget();
+  });
+  $('#tv-seek').addEventListener('change', () => (seekingTake = false));
+
   // ── Frame loop ──────────────────────────────────────────────────────────
   function frame() {
     if (song && $('#view-player').classList.contains('active')) {
       let t = drag && drag.moved ? drag.t : songTime();
-      if (looping && sel && beatLen() && !drag) {
+      if (take && sel && beatLen() && t >= loopBounds()[1] - 0.01) {
+        // A take records one run-through of the selected section, then stops by itself
+        stopTake();
+      } else if (looping && sel && beatLen() && !drag && !armed) {
         const [s, e] = loopBounds();
         if (t >= e - 0.01 || t < s - 0.3) { seek(s); t = s; }
       }
       draw(t);
       updateCounter(t);
       $('#t-now').textContent = fmt(t);
+      if (mirrorOpen) updateMirror(t);
     }
+    if (viewing) tickTakeView();
     requestAnimationFrame(frame);
   }
 
@@ -617,6 +1079,11 @@
       art: `<div class="ia-row ia-mock"><span class="eight"><b>1</b></span><span class="eight sel"><b>2</b></span><span class="eight sel"><b>3</b></span><span class="btn small-btn on">⟲ Loop</span><span class="btn small-btn">0.5×</span></div>`,
       title: 'Drill the hard part',
       text: 'Tap an 8-count to jump there. <b>＋ next</b> makes the section longer and <b>⟲ Loop</b> repeats it. Slow it down to <b>0.5×</b> or <b>0.75×</b> and the pitch stays the same.',
+    },
+    {
+      art: `<div class="ia-mirror ia-mock"><div class="mini">${[0, 1, 2, 3, 4, 5, 6, 7].map((i) => `<i style="animation-delay:${i * 0.5}s"></i>`).join('')}</div><span class="dot"></span></div>`,
+      title: 'Dance in the mirror',
+      text: 'Tap <b>Mirror & record</b> to see yourself with the counts on screen. Prop your phone up, tap the <b>red button</b>, get in place, and you’re counted in with a 5-6-7-8. Pick an 8-count first and it records just that part. Watch your takes back with the music, or save them to Photos.',
     },
     {
       art: `<div class="ia-note ia-mock"><small>Notes for ${eightWord()} 2</small>hit on 5, melt down 6-7, roll out on 8</div>`,
@@ -701,6 +1168,7 @@
   renderLibrary();
   requestAnimationFrame(frame);
   if (!store.get('introSeen')) openIntro();
+  if (!store.get('mirrorSeen')) $('#mirror-new').classList.remove('hidden');
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});

@@ -93,6 +93,15 @@
       <button data-rate="1" class="on">1×</button>
     </div>
 
+    <div class="mirror-row">
+      <button id="open-mirror" class="btn primary mirror-btn">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2.2l1.6-2h7.4l1.6 2h2.2A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        Mirror &amp; record
+        <span id="mirror-new" class="new-pill hidden">NEW</span>
+      </button>
+      <button id="open-takes" class="btn takes-btn">Takes<span id="takes-n" class="count-badge"></span></button>
+    </div>
+
     <div class="card beat-card">
       <div class="card-head">
         <h3>The beat</h3>
@@ -138,6 +147,63 @@
     </header>
     <div id="st-content"></div>
   </section>
+
+  <!-- ───────────── Mirror (camera practice) ───────────── -->
+  <div id="mirror" class="mirror hidden" aria-label="Mirror">
+    <video id="cam" playsinline muted autoplay></video>
+    <div class="m-top">
+      <button id="m-close" class="m-btn" aria-label="Close mirror">✕</button>
+      <div class="m-head">
+        <div id="m-rectime" class="m-rectime"><i></i>REC <span>0:00</span></div>
+        <div id="m-label" class="m-label"></div>
+      </div>
+      <button id="m-flip" class="m-btn" aria-label="Switch camera">⟲</button>
+      <div id="m-counts" class="m-counts"></div>
+    </div>
+    <div id="m-countin" class="m-countin hidden"></div>
+    <div id="m-msg" class="m-msg hidden"></div>
+    <div class="m-bottom">
+      <div id="m-info" class="m-info"></div>
+      <div class="m-row">
+        <div class="m-side">
+          <button id="m-takes" class="m-pill" aria-label="Your takes"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 9.5v5l4-2.5z" fill="currentColor"/></svg><span class="m-takes-label">Takes</span><span id="m-takes-n" class="count-badge"></span></button>
+          <button id="m-speed" class="m-pill" aria-label="Speed">1×</button>
+        </div>
+        <button id="m-rec" class="m-rec" aria-label="Record a take"><span></span></button>
+        <div class="m-side right">
+          <button id="m-ready" class="m-pill" aria-label="Time to get in place">⏱ 5s</button>
+          <button id="m-play" class="m-btn" aria-label="Play">▶</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ───────────── Takes list ───────────── -->
+  <div id="takes" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="takes-title">
+    <div class="sheet-card">
+      <div class="card-head">
+        <h3 id="takes-title">Your takes</h3>
+        <button id="takes-close" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div id="takes-list"></div>
+      <p class="small muted takes-note">Takes are saved on this phone. Videos saved to Photos have no sound; the music plays when you watch them here.</p>
+    </div>
+  </div>
+
+  <!-- ───────────── Watching a take ───────────── -->
+  <div id="take-view" class="take-view hidden" role="dialog" aria-modal="true">
+    <div class="tv-top">
+      <button id="tv-close" class="m-btn" aria-label="Close">✕</button>
+      <div class="tv-title"><b id="tv-title"></b><small id="tv-count"></small></div>
+      <button id="tv-flip" class="m-btn" aria-label="Flip video">⇋</button>
+    </div>
+    <video id="take-video" playsinline muted></video>
+    <div class="tv-bottom">
+      <button id="tv-play" class="m-btn" aria-label="Play">▶</button>
+      <input id="tv-seek" type="range" min="0" max="1000" value="0" aria-label="Scrub">
+      <span id="tv-time" class="tv-time">0:00</span>
+    </div>
+  </div>
 
   <!-- ───────────── How-to tour ───────────── -->
   <div id="intro" class="intro hidden" role="dialog" aria-modal="true" aria-labelledby="intro-title">

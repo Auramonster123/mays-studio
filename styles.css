@@ -442,3 +442,6 @@ html[data-mode="contemporary"] .brand { font-style: italic; }
 .ia-learn > div b { position: absolute; top: 4px; left: 8px; font-family: var(--display); font-size: 30px; color: var(--accent); line-height: 1; }
 .ia-learn > div:nth-child(2)::after { content: "you"; position: absolute; top: 5px; left: 7px; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 .ia-step { justify-self: center; margin-top: 4px; padding: 6px 14px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 13px; font-weight: 600; }
+
+.song-title { cursor: pointer; }
+.song-title:active { opacity: .7; }

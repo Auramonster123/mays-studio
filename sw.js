@@ -1,6 +1,6 @@
 // Offline support: the app works with no signal (studios, basements, trains).
 // Bump VERSION whenever you change any app file so her phone picks up the update.
-const VERSION = 'mays-studio-v5';
+const VERSION = 'mays-studio-v6';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'soundtrack.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-180.png'];
 
 self.addEventListener('install', (e) => {

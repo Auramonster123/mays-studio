@@ -71,7 +71,7 @@
   <section id="view-player" class="view">
     <header class="top compact">
       <button id="back" class="icon-btn" aria-label="Back">‹</button>
-      <h2 id="song-title" class="song-title"></h2>
+      <h2 id="song-title" class="song-title" role="button" tabindex="0" title="Tap to rename"></h2>
       <button class="icon-btn help-btn" data-help aria-label="How to use">?</button>
     </header>
 
@@ -142,7 +142,7 @@
       <div class="beat-row">
         <button id="tap" class="btn primary tap">TAP</button>
         <div class="bpm-box">
-          <input id="bpm" type="number" inputmode="decimal" step="0.1" min="40" max="220" placeholder="—">
+          <input id="bpm" type="text" inputmode="decimal" autocomplete="off" placeholder="—" aria-label="Beats per minute">
           <span class="muted small">BPM</span>
         </div>
       </div>
@@ -295,6 +295,7 @@
         <li><b>Use your teacher's music.</b> Ask for the exact cut they dance to. No file? Record it with Voice Memos, then Share → Save to Files.</li>
         <li><b>Allow the camera.</b> The first time you open the mirror, tap Allow. If you said no, turn it on in Settings → Safari → Camera.</li>
         <li><b>Saved videos are silent.</b> The music plays when you watch takes here in the app.</li>
+        <li><b>Rename a song</b> by tapping its name at the top of the song page.</li>
         <li><b>Keep it on your home screen.</b> That's what keeps your songs, notes and takes saved on your phone.</li>
       </ol>
     </div>

@@ -12,13 +12,32 @@
     open() {
       if (this.db) return Promise.resolve(this.db);
       return new Promise((resolve, reject) => {
-        const req = indexedDB.open('mays-studio', 3);
-        req.onupgradeneeded = () => {
+        const req = indexedDB.open('mays-studio', 4);
+        req.onupgradeneeded = (e) => {
           const db = req.result;
           if (!db.objectStoreNames.contains('songs')) db.createObjectStore('songs', { keyPath: 'id' });
           if (!db.objectStoreNames.contains('takes')) db.createObjectStore('takes', { keyPath: 'id' }).createIndex('song', 'songId');
           // One choreo (reference) video per song
           if (!db.objectStoreNames.contains('refs')) db.createObjectStore('refs', { keyPath: 'songId' });
+          // The audio file and waveform live apart from the song's details, so
+          // saving a note or a tap doesn't re-save megabytes of music
+          if (!db.objectStoreNames.contains('media')) {
+            const media = db.createObjectStore('media', { keyPath: 'id' });
+            if (e.oldVersion >= 1) {
+              req.transaction.objectStore('songs').openCursor().onsuccess = (ev) => {
+                const cur = ev.target.result;
+                if (!cur) return;
+                const s = cur.value;
+                if (s.blob) {
+                  media.put({ id: s.id, blob: s.blob, peaks: s.peaks });
+                  delete s.blob;
+                  delete s.peaks;
+                  cur.update(s);
+                }
+                cur.continue();
+              };
+            }
+          }
         };
         req.onsuccess = () => {
           this.db = req.result;
@@ -42,6 +61,9 @@
     get(id) { return this.tx('songs', 'readonly', (s) => s.get(id)); },
     put(rec) { return this.tx('songs', 'readwrite', (s) => s.put(rec)); },
     del(id) { return this.tx('songs', 'readwrite', (s) => s.delete(id)); },
+    getMedia(id) { return this.tx('media', 'readonly', (s) => s.get(id)); },
+    putMedia(rec) { return this.tx('media', 'readwrite', (s) => s.put(rec)); },
+    delMedia(id) { return this.tx('media', 'readwrite', (s) => s.delete(id)); },
     takesFor(songId) { return this.tx('takes', 'readonly', (s) => s.index('song').getAll(songId)); },
     putTake(rec) { return this.tx('takes', 'readwrite', (s) => s.put(rec)); },
     delTake(id) { return this.tx('takes', 'readwrite', (s) => s.delete(id)); },
@@ -61,8 +83,9 @@
   // ── State ───────────────────────────────────────────────────────────────
   const audio = new Audio();
   audio.preload = 'auto';
-  let song = null;        // current song record
-  let objectURL = null;
+  let song = null;        // current song's details (bpm, notes…)
+  let peaks = null;       // its waveform
+  let objectURL = null;   // its audio
   let sel = null;         // selected 8-counts: { from, to } (0-based)
   let looping = false;
   let taps = [];
@@ -157,11 +180,17 @@
     }
     const rec = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      name, blob, peaks: info.peaks, duration: info.duration,
+      name, duration: info.duration,
       bpm: null, offset: 0, oneSet: false, notes: {}, added: Date.now(),
       ...extra,
     };
-    await DB.put(rec);
+    try {
+      await DB.putMedia({ id: rec.id, blob, peaks: info.peaks });
+      await DB.put(rec);
+    } catch (e) {
+      DB.delMedia(rec.id).catch(() => {});
+      return toast('Not enough space on your phone for this song');
+    }
     openSong(rec.id);
   }
 
@@ -200,10 +229,13 @@
 
   // ── Player ──────────────────────────────────────────────────────────────
   async function openSong(id) {
-    song = await DB.get(id);
-    if (!song) return;
+    const rec = await DB.get(id);
+    const media = rec && ((await DB.getMedia(id)) || (rec.blob && { blob: rec.blob, peaks: rec.peaks }));
+    if (!rec || !media) return toast("Couldn't open this song");
+    song = rec;
+    peaks = media.peaks;
     if (objectURL) URL.revokeObjectURL(objectURL);
-    objectURL = URL.createObjectURL(song.blob);
+    objectURL = URL.createObjectURL(media.blob);
     audio.src = objectURL;
     setRate(1);
     sel = null; looping = false; taps = []; lastBeat = lastEight = undefined;
@@ -234,14 +266,33 @@
     show('view-library');
   }
   $('#back').addEventListener('click', closeSong);
+  $('#song-title').addEventListener('click', () => {
+    if (!song) return;
+    const name = prompt('Rename this song', song.name);
+    if (name === null || !name.trim()) return;
+    song.name = name.trim().slice(0, 80);
+    $('#song-title').textContent = song.name;
+    if ('mediaSession' in navigator && window.MediaMetadata) {
+      navigator.mediaSession.metadata = new MediaMetadata({ title: song.name, artist: "May's Studio" });
+    }
+    saveSoon();
+  });
 
   $('#delete-song').addEventListener('click', async () => {
     if (!song || !confirm(`Remove “${song.name}” with its notes and video takes?`)) return;
+    const id = song.id;
+    clearTimeout(saveTimer);
     audio.pause();
-    await DB.del(song.id);
-    await DB.delTakesFor(song.id);
-    await DB.delRef(song.id);
+    audio.removeAttribute('src');
+    if (objectURL) URL.revokeObjectURL(objectURL);
+    objectURL = null;
     song = null;
+    peaks = null;
+    ref = null;
+    await DB.del(id);
+    await DB.delMedia(id);
+    await DB.delTakesFor(id);
+    await DB.delRef(id);
     renderLibrary();
     show('view-library');
   });
@@ -322,8 +373,12 @@
   });
 
   $('#bpm').addEventListener('change', (e) => {
-    const v = parseFloat(e.target.value);
-    if (!song || !(v >= 40 && v <= 220)) return;
+    const v = parseFloat(String(e.target.value).replace(',', '.'));
+    if (!song) return;
+    if (!(v >= 40 && v <= 220)) {
+      e.target.value = song.bpm ? song.bpm.toFixed(1) : '';
+      return toast('BPM should be between 40 and 220');
+    }
     song.bpm = v;
     gridChanged();
     saveSoon();
@@ -331,7 +386,7 @@
 
   $('#set-one').addEventListener('click', () => {
     if (!song) return;
-    song.offset = audio.currentTime;
+    song.offset = songTime();
     song.oneSet = true;
     toast(song.bpm ? 'Counting starts here' : 'Got the “1”. Now tap along to set the tempo');
     gridChanged();
@@ -520,7 +575,7 @@
     }
 
     // Peaks
-    const peaks = song.peaks;
+    if (!peaks) return;
     const barW = 2 * dpr, stepPx = 3 * dpr;
     const span = Math.max(1, Math.round((stepPx / pps) * PEAK_RATE));
     for (let x = 0; x < w; x += stepPx) {
@@ -797,11 +852,15 @@
       const blob = new Blob(t.chunks, { type: t.mime.split(';')[0] });
       if (!blob.size || t.duration < 0.5) return toast("That take was too short to save");
       const n = (await DB.takesFor(t.songId)).reduce((m, x) => Math.max(m, x.n), 0) + 1;
-      await DB.putTake({
-        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-        songId: t.songId, n, blob, mime: blob.type, songAt0: t.songAt0, rate: t.rate,
-        from: t.from, to: t.to, mirrored: t.mirrored, duration: t.duration, added: Date.now(),
-      });
+      try {
+        await DB.putTake({
+          id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+          songId: t.songId, n, blob, mime: blob.type, songAt0: t.songAt0, rate: t.rate,
+          from: t.from, to: t.to, mirrored: t.mirrored, duration: t.duration, added: Date.now(),
+        });
+      } catch (e) {
+        return toast('Not enough space to save this take. Delete some old takes first.');
+      }
       toast(`Take ${n} saved`);
       refreshTakeCount();
     };
@@ -855,6 +914,7 @@
       stopCam();
     } else {
       startCam();
+      if (navigator.wakeLock) navigator.wakeLock.request('screen').then((w) => (wakeLock = w), () => {});
     }
   });
 
@@ -1106,6 +1166,7 @@
     learnOpen = false;
     refVideo.pause();
     stopLCam();
+    $('#l-me').classList.remove('on');
     refVideo.removeAttribute('src');
     refVideo.load();
     if (refURL) URL.revokeObjectURL(refURL);
@@ -1250,8 +1311,9 @@
   });
   document.addEventListener('visibilitychange', () => {
     if (!learnOpen) return;
-    if (document.hidden) { refVideo.pause(); stopLCam(); }
-    else if ($('#l-me').classList.contains('on')) startLCam();
+    if (document.hidden) { refVideo.pause(); stopLCam(); return; }
+    if ($('#l-me').classList.contains('on')) startLCam();
+    if (navigator.wakeLock) navigator.wakeLock.request('screen').then((w) => (lWake = w), () => {});
   });
 
   // ── Comparing a take with the choreo video ──────────────────────────────

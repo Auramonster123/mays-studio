@@ -207,7 +207,7 @@ html[data-mode="contemporary"] .brand { font-style: italic; }
 
 /* ── Toast ──────────────────────────────────────────────── */
 .toast {
-  position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 24px); transform: translate(-50%, 20px);
+  position: fixed; z-index: 100; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 24px); transform: translate(-50%, 20px);
   background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 999px; font-size: 14px; font-weight: 500;
   opacity: 0; pointer-events: none; transition: opacity .25s, transform .25s; max-width: calc(100% - 32px); text-align: center;
 }
@@ -445,3 +445,6 @@ html[data-mode="contemporary"] .brand { font-style: italic; }
 
 .song-title { cursor: pointer; }
 .song-title:active { opacity: .7; }
+
+/* On the full-screen views, show messages up top, clear of the controls */
+.no-scroll .toast { bottom: auto; top: calc(env(safe-area-inset-top) + 130px); }

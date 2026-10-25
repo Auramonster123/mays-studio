@@ -55,6 +55,8 @@
         const req = fn(t.objectStore(name));
         t.oncomplete = () => resolve(req && req.result);
         t.onerror = () => reject(t.error);
+        // A full phone aborts the transaction (often without an error event)
+        t.onabort = () => reject(t.error || new Error('Storage transaction aborted'));
       });
     },
     all() { return this.tx('songs', 'readonly', (s) => s.getAll()); },
@@ -266,6 +268,7 @@
     show('view-library');
   }
   $('#back').addEventListener('click', closeSong);
+  $('#song-title').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#song-title').click(); });
   $('#song-title').addEventListener('click', () => {
     if (!song) return;
     const name = prompt('Rename this song', song.name);
@@ -826,20 +829,27 @@
       audio.pause();
       return toast("Couldn't start recording");
     }
-    const chunks = [];
-    take = {
-      recorder, chunks, songId: song.id, mime: recorder.mimeType || mime || 'video/mp4',
+    const t = (take = {
+      recorder, chunks: [], songId: song.id, mime: recorder.mimeType || mime || 'video/mp4',
       rate: audio.playbackRate, from: sel ? sel.from : null, to: sel ? sel.to : null,
       mirrored: facing === 'user', t0: performance.now(), songAt0: songTime(),
-    };
+    });
     armed = null;
     $('#mirror').classList.remove('arming');
     $('#mirror').classList.add('recording');
-    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-    recorder.onstart = () => { if (take && take.recorder === recorder) { take.t0 = performance.now(); take.songAt0 = songTime(); } };
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) t.chunks.push(e.data); };
+    recorder.onstart = () => { if (take === t) { t.t0 = performance.now(); t.songAt0 = songTime(); } };
+    // However recording ends (her tap, the end of the section, or iOS taking
+    // the camera away for a call), the take gets saved
+    recorder.onstop = () => saveTake(t);
+    const cameraLost = () => { if (take === t) { t.cut = 'camera'; stopTake(); } };
+    recorder.onerror = cameraLost;
+    const track = camStream.getVideoTracks()[0];
+    if (track) track.addEventListener('ended', cameraLost, { once: true });
     recorder.start(1000);
   }
 
+  // Ends the take in progress; the recorder's stop event then saves it
   function stopTake() {
     if (!take) return;
     const t = take;
@@ -848,23 +858,27 @@
     $('#mirror').classList.remove('recording');
     audio.pause();
     renderMirrorBar();
-    t.recorder.onstop = async () => {
-      const blob = new Blob(t.chunks, { type: t.mime.split(';')[0] });
-      if (!blob.size || t.duration < 0.5) return toast("That take was too short to save");
-      const n = (await DB.takesFor(t.songId)).reduce((m, x) => Math.max(m, x.n), 0) + 1;
-      try {
-        await DB.putTake({
-          id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-          songId: t.songId, n, blob, mime: blob.type, songAt0: t.songAt0, rate: t.rate,
-          from: t.from, to: t.to, mirrored: t.mirrored, duration: t.duration, added: Date.now(),
-        });
-      } catch (e) {
-        return toast('Not enough space to save this take. Delete some old takes first.');
-      }
-      toast(`Take ${n} saved`);
-      refreshTakeCount();
-    };
     if (t.recorder.state !== 'inactive') t.recorder.stop();
+  }
+
+  async function saveTake(t) {
+    if (take === t) { t.cut = 'camera'; stopTake(); }   // the recorder stopped by itself
+    const blob = new Blob(t.chunks, { type: t.mime.split(';')[0] });
+    if (!blob.size || t.duration < 0.5) return toast('That take was too short to save');
+    try {
+      const n = (await DB.takesFor(t.songId)).reduce((m, x) => Math.max(m, x.n), 0) + 1;
+      await DB.putTake({
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        songId: t.songId, n, blob, mime: blob.type, songAt0: t.songAt0, rate: t.rate,
+        from: t.from, to: t.to, mirrored: t.mirrored, duration: t.duration, added: Date.now(),
+      });
+      toast(t.cut === 'music' ? `The music stopped, so take ${n} was saved up to there`
+        : t.cut === 'camera' ? `The camera turned off, so take ${n} was saved up to there`
+        : `Take ${n} saved`);
+    } catch (e) {
+      return toast('Not enough space to save this take. Delete some old takes first.');
+    }
+    refreshTakeCount();
   }
 
   $('#open-mirror').addEventListener('click', openMirror);
@@ -903,7 +917,20 @@
     renderMirrorBar();
   });
   audio.addEventListener('play', () => mirrorOpen && renderMirrorBar());
-  audio.addEventListener('pause', () => mirrorOpen && renderMirrorBar());
+  audio.addEventListener('pause', () => {
+    // Pause events arrive a moment late; ignore one from our own pause just
+    // before the music restarted for the count-in
+    if (!mirrorOpen || !audio.paused) return;
+    // Something outside the app stopped the music (a call, the lock screen…)
+    if (take) {
+      if (!audio.ended) take.cut = 'music';
+      stopTake();
+    } else if (armed && armed.phase === 'preroll') {
+      disarm();
+      toast('The music stopped. Tap the red button to try again.');
+    }
+    renderMirrorBar();
+  });
 
   document.addEventListener('visibilitychange', () => {
     if (!mirrorOpen) return;
@@ -965,7 +992,8 @@
 
   async function saveTakeFile(t) {
     const ext = t.mime.includes('mp4') ? 'mp4' : 'webm';
-    const file = new File([t.blob], `${song.name} - take ${t.n}.${ext}`, { type: t.mime });
+    const safeName = song.name.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'May’s Studio';
+    const file = new File([t.blob], `${safeName} - take ${t.n}.${ext}`, { type: t.mime });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try { await navigator.share({ files: [file] }); } catch (e) { /* she closed the share sheet */ }
       return;
@@ -1164,6 +1192,9 @@
   function closeLearn() {
     if (!learnOpen) return;
     learnOpen = false;
+    clearTimeout(stepTimer);
+    stepUntil = null;
+    lLoop = null;
     refVideo.pause();
     stopLCam();
     $('#l-me').classList.remove('on');
